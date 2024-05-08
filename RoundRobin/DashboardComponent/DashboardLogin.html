@@ -1,0 +1,168 @@
+<html><head>
+    <title>Dashboard Web Resource</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+</head>
+<body>
+    <script>
+//run a function that gets the User GUID and checks if the ramcosub_loggedin is false
+window.onload = function() {
+    setRoundRobinLogin();
+}
+function setRoundRobinLogin()
+{
+    var loginStatus = getLoginStatusForUser();
+    var userId = window.parent.Xrm.Page.context.getUserId();
+    userId = userId.slice(1,userId.length -1);
+    var found = false;
+    for (var i=0; i < loginStatus.d.results.length; i++)
+    {
+        if(loginStatus.d.results[i]["ramcosub_User"].Id.toUpperCase() === userId)
+        {
+            found = true;
+            break;
+        }
+        continue;
+    }
+    if (found == false)
+    {
+        var listOfTeams = getListOfTeams(userId);
+        createActiveLoginRecordWithinBusinesHours(listOfTeams, userId);
+    }
+}
+
+
+function getLoginStatusForUser()
+{
+    var dateTimeNow = new Date();
+    let currentDay= String(dateTimeNow.getDate()).padStart(2, "0");
+    let currentMonth = String(dateTimeNow.getMonth()+1).padStart(2,"0");
+    let currentYear = dateTimeNow.getFullYear();
+    let currentDate = `${currentYear}-${currentMonth}-${currentDay}`;
+    var req = new XMLHttpRequest();
+    var userId = window.parent.Xrm.Page.context.getUserId();
+    req.open("GET", window.parent.Xrm.Page.context.getClientUrl() + "/XRMServices/2011/OrganizationData.svc/ramcosub_userloginSet?$select=statecode,ramcosub_User&$filter=CreatedOn ge datetime'" + currentDate + "T04:00:00.000Z' and statecode/Value eq 0", false);
+    req.setRequestHeader("Accept", "application/json");
+    req.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+    req.setRequestHeader('Cache-Control', 'no-cache');
+    req.send();
+    if (req.readyState === 4 && req.status === 200) {
+        var result = JSON.parse(req.response);
+        return result;
+    }
+    else {
+        window.parent.Xrm.Utility.alertDialog(req.statusText);
+    }
+    
+};
+
+function createLoginRecord(userId, teamId)
+{
+    var entity = {};
+    entity.ramcosub_Team = {
+        Id: teamId,
+        LogicalName: "team"
+    };
+    entity.ramcosub_User = {
+        Id: userId,
+        LogicalName: "systemuser"
+    };
+    entity.ramcosub_name = "User Logged In";
+
+    var req = new XMLHttpRequest();
+    req.open("POST", encodeURI(window.parent.Xrm.Page.context.getClientUrl() + "/XRMServices/2011/OrganizationData.svc/ramcosub_userloginSet"), true);
+    req.setRequestHeader("Accept", "application/json");
+    req.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+    req.setRequestHeader('Cache-Control', 'no-cache');
+    req.send(JSON.stringify(entity));
+}
+
+function parseTimeStringToTime(timeString) {
+    var dummyDate = new Date('1970-01-01T' + timeString);
+  
+    var hours = dummyDate.getHours();
+    var minutes = dummyDate.getMinutes();
+    var seconds = dummyDate.getSeconds();
+
+    var time = {
+      hours: hours,
+      minutes: minutes,
+      seconds: seconds
+    };
+  
+    return time;
+  }
+
+function createActiveLoginRecordWithinBusinesHours(listOfTeams, userId)
+{
+    // For each team, Get the Open and Closed Hours Of Operation String from each team, convert it to Time objects and compare it to the time the event happened
+    for (i = 0; i < listOfTeams.length; i++)
+    {
+        teamId = listOfTeams[i][2];
+        execution = new Date().getTime();
+        var openHours = new Date(listOfTeams[0][0]).getTime(); 
+        var closeHours = new Date(listOfTeams[0][1]).getTime();
+        console.log("is execution > openTime?");
+        console.log(execution > openHours);
+        console.log("is execution > closeTime?");
+        console.log(execution < closeHours);
+        if (execution > openHours && execution < closeHours)
+        {
+            // If the event is within the hours, create a User Login record and set the Lookup field to the Team record.
+            createLoginRecord(userId, teamId);
+        }  
+    }
+}
+
+function parseTimeStringToTime(timeString) {
+    var [time, period] = timeString.split(' ');
+    var [hours, minutes] = time.split(':').map(Number);
+  
+    if (period.toLowerCase() === 'pm' && hours !== 12) {
+      hours += 12;
+    } else if (period.toLowerCase() === 'am' && hours === 12) {
+      hours = 0;
+    }
+
+    var time = {
+        hours: hours,
+        minutes: minutes
+    };
+    return time;
+}
+
+function getListOfTeams(userId) {
+    var listOfTeams = [];
+
+    var req = new XMLHttpRequest();
+    req.open("GET", window.parent.Xrm.Page.context.getClientUrl() + "/api/data/v8.2/systemusers(" + userId + ")?$expand=teammembership_association($select=teamid,name,ramcosub_closedatetime,ramcosub_opendatetime)", false);
+    req.setRequestHeader("OData-MaxVersion", "4.0");
+    req.setRequestHeader("OData-Version", "4.0");
+    req.setRequestHeader("Accept", "application/json");
+    req.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+    req.setRequestHeader("Prefer", "odata.include-annotations=\"*\"");
+    req.setRequestHeader('Cache-Control', 'no-cache');
+    req.send();
+    if (req.readyState === 4 && req.status === 200) {
+        var results = JSON.parse(req.response);
+        for (var i = 0; i < results["teammembership_association"].length; i++) {
+            var openTime = results["teammembership_association"][i]["ramcosub_opendatetime"];
+            var closeTime = results["teammembership_association"][i]["ramcosub_closedatetime"];
+            var teamId = results["teammembership_association"][i]["teamid"];
+            if (openTime !== null && closeTime !== null)
+            {
+                listOfTeams.push([openTime, closeTime, teamId]);
+            }
+            else
+            {
+                continue
+            }
+        }
+    } else 
+    {
+        window.parent.Xrm.Utility.alertDialog(req.statusText);
+    }
+    return listOfTeams;
+}
+    </script>
+</body>
+</html>
